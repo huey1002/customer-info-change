@@ -1,43 +1,524 @@
-// Supabase Edge Function: juso-eng
-// 행정안전부 영문주소 API 중계 (브라우저 직접 호출이 CORS로 막힐 때만 사용)
-//
-// 배포:
-//   supabase functions new juso-eng   → 이 파일 내용으로 index.ts 교체
-//   supabase secrets set JUSO_ENG_KEY=발급받은_승인키
-//   supabase functions deploy juso-eng --no-verify-jwt
-// 변환기 설정 > 중계 주소:
-//   https://<프로젝트ID>.supabase.co/functions/v1/juso-eng
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>수취인 정보 변환기</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --text:#1d2129; --muted:#6b7280; --line:#e2e5ea;
+  --accent:#2f6fed; --accent-weak:#e8efff; --warn:#b45309; --warn-bg:#fff7e6; --ok:#15803d;
+  --code-bg:#0f172a; --code-text:#e2e8f0;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#0f1115; --panel:#181b21; --text:#e6e8ec; --muted:#9aa1ad; --line:#2a2f38;
+    --accent:#6b9bff; --accent-weak:#1c2740; --warn:#fbbf24; --warn-bg:#2a2210; --ok:#4ade80;
+    --code-bg:#0b0e13; --code-text:#e2e8f0;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Pretendard","Malgun Gothic",sans-serif}
+header{padding:16px;border-bottom:1px solid var(--line);background:var(--panel);display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+header h1{font-size:17px;margin:0}
+header span{color:var(--muted);font-size:12px}
+main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px;max-width:1280px;margin:0 auto}
+@media (max-width:900px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px}
+.panel h2{font-size:14px;margin:0 0 10px}
+textarea{width:100%;min-height:220px;resize:vertical;border:1px solid var(--line);border-radius:8px;padding:10px;background:transparent;color:var(--text);font:13px/1.5 ui-monospace,Menlo,Consolas,monospace}
+.row{display:grid;grid-template-columns:130px 1fr;gap:8px;align-items:center;margin-bottom:8px}
+.row label{color:var(--muted);font-size:12px}
+input[type=text]{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 9px;background:transparent;color:var(--text);font-size:13px}
+input[readonly]{opacity:.85}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+button{border:1px solid var(--line);background:var(--panel);color:var(--text);border-radius:7px;padding:8px 12px;font-size:13px;cursor:pointer}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.soft{background:var(--accent-weak);border-color:transparent;color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+pre{background:var(--code-bg);color:var(--code-text);border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-all;margin:0;font:13px/1.6 ui-monospace,Menlo,Consolas,monospace;min-height:150px}
+.warns{margin-top:10px;display:flex;flex-direction:column;gap:6px}
+.warn{background:var(--warn-bg);color:var(--warn);border-radius:6px;padding:7px 10px;font-size:12px}
+.okmsg{color:var(--ok);font-size:12px;margin-left:4px}
+.hint{color:var(--muted);font-size:12px;margin-top:6px}
+.sep{height:1px;background:var(--line);margin:12px 0}
+#modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:50;padding:16px}
+#modal .box{background:var(--panel);border-radius:10px;width:100%;max-width:520px;overflow:hidden;border:1px solid var(--line)}
+#modal .bar{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line)}
+#postcodeWrap{height:470px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#111827;color:#fff;padding:9px 14px;border-radius:8px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+.settings{margin-top:14px;border-top:1px solid var(--line);padding-top:10px}
+.settings summary{cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:10px}
+.cands{display:flex;flex-direction:column;gap:6px;margin:0 0 12px}
+.cands button{text-align:left;font-size:12px;line-height:1.4}
+.cands small{color:var(--muted)}
+[hidden]{display:none!important}
+@media (max-width:520px){.row{grid-template-columns:1fr;gap:4px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>수취인 정보 변환기</h1>
+  <span>대만iN · 고객 정보 → @수취인 정보 / Customer Info</span>
+</header>
 
-const ALLOW_ORIGIN = "https://huey1002.github.io";
+<main>
+  <section class="panel">
+    <h2>① 고객 정보 붙여넣기</h2>
+    <textarea id="raw" placeholder="식스샵 주문 정보, 구글폼 응답, 고객이 보낸 텍스트 등 그대로 붙여넣으세요.&#10;&#10;예)&#10;개인통관고유부호	P220012599685&#10;수취인명	신재석&#10;연락처1	010-4103-4520&#10;배송지	충청북도 청주시 흥덕구 백봉로 130 (봉명동)&#10;한라에피트 103동 902호"></textarea>
+    <div class="btns">
+      <button class="primary" id="btnParse">변환</button>
+      <button id="btnClear">초기화</button>
+    </div>
 
-const cors = {
-  "Access-Control-Allow-Origin": ALLOW_ORIGIN,
-  "Access-Control-Allow-Methods": "GET, OPTIONS",
-  "Access-Control-Allow-Headers": "*",
+    <div class="sep"></div>
+    <h2>② 확인·수정</h2>
+    <div class="row"><label>이름 (한)</label><input type="text" id="nameKo"></div>
+    <div class="row"><label>이름 (영)</label><input type="text" id="nameEn"></div>
+    <div class="row"><label>주소 (KOR)</label><input type="text" id="addrKo"></div>
+    <div class="row"><label>검색용 주소</label><input type="text" id="addrQuery"></div>
+    <div class="btns" style="margin:0 0 10px">
+      <button class="soft" id="btnLookup">자동 조회 다시 하기</button>
+      <button id="btnSearch">카카오 검색창으로 찾기</button>
+      <span class="okmsg" id="lookupState"></span>
+    </div>
+    <div id="candidates" class="cands" hidden></div>
+    <div class="row"><label>동·호 (영문)</label><input type="text" id="unitEn" placeholder="#103-902"></div>
+    <div class="row"><label>건물명 (영문)</label><input type="text" id="bldgEn" placeholder="없으면 비워두기"></div>
+    <div class="row"><label>도로명 (영문)</label><input type="text" id="roadEn" placeholder="주소 검색 시 자동 입력"></div>
+    <div class="row"><label>우편번호</label><input type="text" id="postal" placeholder="주소 검색 시 자동 입력"></div>
+    <div class="row"><label>전화번호</label><input type="text" id="phone"></div>
+    <div class="row"><label>통관부호</label><input type="text" id="pccc"></div>
+  </section>
+
+  <section class="panel">
+    <h2>③ 결과 <span class="okmsg" id="copied"></span></h2>
+    <pre id="out"></pre>
+    <div class="btns">
+      <button class="primary" id="btnCopy">복사</button>
+    </div>
+    <div class="warns" id="warns"></div>
+    <details class="settings" id="settings">
+      <summary>설정 · 행안부 영문주소 API</summary>
+      <div class="row"><label>승인키 (confmKey)</label><input type="text" id="apiKey" placeholder="juso.go.kr에서 발급받은 영문주소 API 승인키"></div>
+      <div class="row"><label>중계 주소 (선택)</label><input type="text" id="proxyUrl" placeholder="직접 호출이 막힐 때만: Supabase 함수 URL"></div>
+      <div class="btns"><button class="primary" id="btnSaveCfg">저장</button><button id="btnTestCfg">연결 테스트</button><span class="okmsg" id="cfgState"></span></div>
+      <p class="hint">승인키는 이 브라우저에만 저장되고 코드나 GitHub에는 올라가지 않습니다.</p>
+    </details>
+    <p class="hint">한글 주소는 고객 입력값을 그대로 둡니다. 우편번호와 영문 도로명은 행정안전부 영문주소 API(네이버 영문주소와 같은 도로명주소 DB)로 자동 조회합니다. 동·호와 건물명 영문은 자동 변환한 값이니 필요하면 직접 고치세요.</p>
+  </section>
+</main>
+
+<div id="modal">
+  <div class="box">
+    <div class="bar"><strong>주소 검색</strong><button id="btnClose">닫기</button></div>
+    <div id="postcodeWrap"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script id="core">
+/* ---------- 로마자 표기 ---------- */
+const INI=['g','kk','n','d','tt','r','m','b','pp','s','ss','','j','jj','ch','k','t','p','h'];
+const MED=['a','ae','ya','yae','eo','e','yeo','ye','o','wa','wae','oe','yo','u','wo','we','wi','yu','eu','ui','i'];
+const FIN=['','k','k','k','n','n','n','t','l','k','m','l','l','l','p','l','m','p','p','t','t','ng','t','t','k','t','p','t'];
+// 받침 + ㅇ 연음용 (받침 소리를 다음 음절 초성으로)
+const FIN_LINK=['','g','kk','ks','n','nj','n','d','r','lg','lm','lb','ls','lt','lp','r','m','b','ps','s','ss','ng','j','ch','k','t','p',''];
+
+function decompose(ch){
+  const c=ch.charCodeAt(0)-0xAC00;
+  if(c<0||c>11171) return null;
+  return {i:Math.floor(c/588), m:Math.floor((c%588)/28), f:c%28};
+}
+// 한 단어 로마자 (연음·ㄹㄹ 정도만 반영)
+function romanizeWord(word){
+  let out='';
+  const chars=[...word];
+  for(let k=0;k<chars.length;k++){
+    const d=decompose(chars[k]);
+    if(!d){out+=chars[k];continue;}
+    const prev=k>0?decompose(chars[k-1]):null;
+    let ini=INI[d.i];
+    if(d.i===5 && prev && prev.f===8) ini='l';          // ㄹㄹ → ll
+    if(d.i===11 && prev && prev.f && FIN_LINK[prev.f]!==undefined && prev.f!==21){
+      // 연음: 앞 받침을 이번 초성으로 (앞 음절에서 받침 생략 처리)
+      out=out.slice(0,out.length-FIN[prev.f].length)+FIN_LINK[prev.f];
+    }
+    out+=ini+MED[d.m]+FIN[d.f];
+  }
+  return out;
+}
+// 이름용: 음절 단위 (연음 없이)
+function romanizeSyl(ch){
+  const d=decompose(ch); if(!d) return ch;
+  let ini=INI[d.i];
+  return ini+MED[d.m]+FIN[d.f];
+}
+const cap=s=>s?s.charAt(0).toUpperCase()+s.slice(1):s;
+
+const SURNAME={
+'김':'Kim','이':'Lee','박':'Park','최':'Choi','정':'Jung','강':'Kang','조':'Cho','윤':'Yoon','장':'Jang','임':'Lim',
+'한':'Han','오':'Oh','서':'Seo','신':'Shin','권':'Kwon','황':'Hwang','안':'Ahn','송':'Song','류':'Ryu','유':'Yoo',
+'전':'Jeon','홍':'Hong','고':'Ko','문':'Moon','양':'Yang','손':'Son','배':'Bae','백':'Baek','허':'Heo','노':'Noh',
+'하':'Ha','곽':'Kwak','성':'Sung','차':'Cha','주':'Joo','우':'Woo','구':'Koo','민':'Min','진':'Jin','채':'Chae',
+'남':'Nam','원':'Won','천':'Cheon','방':'Bang','공':'Kong','변':'Byun','여':'Yeo','추':'Choo','도':'Do','소':'So',
+'석':'Seok','선':'Sun','설':'Seol','마':'Ma','길':'Gil','연':'Yeon','위':'Wi','표':'Pyo','명':'Myung','기':'Ki',
+'반':'Ban','나':'Na','라':'Ra','왕':'Wang','금':'Keum','옥':'Ok','육':'Yook','인':'In','맹':'Maeng','제':'Je',
+'모':'Mo','탁':'Tak','국':'Kook','어':'Eo','은':'Eun','편':'Pyeon','용':'Yong','예':'Ye','경':'Kyung','봉':'Bong',
+'사':'Sa','부':'Boo','가':'Ka','복':'Bok','태':'Tae','목':'Mok','형':'Hyung','계':'Kye','피':'Pi','두':'Doo',
+'감':'Kam','음':'Eum','빈':'Bin','동':'Dong','온':'On','호':'Ho','범':'Bum','좌':'Jwa','승':'Seung','상':'Sang',
+'시':'Si','단':'Dan','당':'Dang','엄':'Eom','지':'Ji','심':'Shim','현':'Hyun','염':'Yeom','함':'Ham','명':'Myung',
+'남궁':'Namgung','황보':'Hwangbo','제갈':'Jegal','선우':'Sunwoo','독고':'Dokgo','사공':'Sagong','서문':'Seomun'
 };
+function romanizeName(ko){
+  ko=(ko||'').replace(/\s/g,'');
+  if(!ko) return '';
+  let sur, given;
+  if(ko.length>=3 && SURNAME[ko.slice(0,2)] && ko.slice(0,2).length===2 && ['남궁','황보','제갈','선우','독고','사공','서문'].includes(ko.slice(0,2))){
+    sur=ko.slice(0,2); given=ko.slice(2);
+  }else{ sur=ko[0]; given=ko.slice(1); }
+  const s=SURNAME[sur]||cap(romanizeWord(sur));
+  const g=[...given].map(c=>cap(romanizeSyl(c))).join(' ');
+  return (s+' '+g).trim();
+}
 
-Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") return new Response(null, { headers: cors });
+/* ---------- 건물명 영문 ---------- */
+const BLDG_DICT=[
+['에이디션','A.DITION'],['e편한세상','e-Pyeonhansesang'],['이편한세상','e-Pyeonhansesang'],['힐스테이트','Hillstate'],
+['롯데캐슬','Lotte Castle'],['아이파크','I-Park'],['푸르지오','Prugio'],['래미안','Raemian'],['자이','Xi'],['더샵','The Sharp'],
+['센트레빌','Centreville'],['꿈에그린','Kumegreen'],['휴먼시아','Humansia'],['하늘채','Haneulchae'],['데시앙','Desian'],
+['스위첸','Switzen'],['해링턴','Harrington'],['어울림','Eoullim'],['비발디','Vivaldi'],['에피트','EFETE'],['써밋','Summit'],
+['에디션','Edition'],['호반','Hoban'],['한라','Halla'],['위브','We\'ve'],['아파트','Apartment'],['오피스텔','Officetel'],
+['빌라','Villa'],['맨션','Mansion'],['타워','Tower'],['빌딩','Building'],['주택','House'],['캐슬','Castle'],['파크','Park'],
+['시티','City'],['센트럴','Central'],['팰리스','Palace'],['레지던스','Residence'],['하이츠','Heights'],['리버뷰','Riverview'],
+['단지','Danji'],['마을','Maeul']
+].sort((a,b)=>b[0].length-a[0].length);
 
-  const keyword = new URL(req.url).searchParams.get("keyword")?.trim() ?? "";
-  if (!keyword) {
-    return Response.json(
-      { results: { common: { errorCode: "E0005", errorMessage: "검색어가 없습니다." }, juso: [] } },
-      { headers: cors },
-    );
+function romanizeBuilding(ko){
+  ko=(ko||'').trim(); if(!ko) return '';
+  const words=ko.split(/[\s,·]+/).filter(Boolean);
+  const parts=[];
+  for(const w of words){
+    let rest=w;
+    while(rest.length){
+      let hit=null;
+      for(const [k,v] of BLDG_DICT){ const idx=rest.indexOf(k); if(idx===0){hit=[k,v];break;} }
+      if(hit){ parts.push(hit[1]); rest=rest.slice(hit[0].length); continue; }
+      // 다음 사전 단어 위치까지 일반 로마자
+      let next=rest.length;
+      for(const [k] of BLDG_DICT){ const idx=rest.indexOf(k); if(idx>0 && idx<next) next=idx; }
+      const chunk=rest.slice(0,next);
+      parts.push(/[가-힣]/.test(chunk)?cap(romanizeWord(chunk)):chunk);
+      rest=rest.slice(next);
+    }
+  }
+  return parts.join(' ').replace(/\s+/g,' ').trim();
+}
+
+/* ---------- 동·호 영문 ---------- */
+function parseUnit(s){
+  s=(s||'').trim();
+  let m, unit='', rest=s;
+  if((m=s.match(/([0-9A-Za-z가-힣]+?)\s*동\s*(?:(\d+)\s*층\s*)?(\d+)\s*호/))){
+    const dong=/^[가-힣]+$/.test(m[1])?cap(romanizeWord(m[1])):m[1].toUpperCase();
+    unit='#'+dong+'-'+m[3]; rest=s.replace(m[0],'');
+  }else if((m=s.match(/(\d+)\s*층\s*(\d+)\s*호/))){
+    unit='#'+m[2]+', '+m[1]+'F'; rest=s.replace(m[0],'');
+  }else if((m=s.match(/(?:^|[\s,])(\d{1,4})\s*-\s*(\d{2,5})(?:\s*호)?(?=$|[\s,])/))){
+    unit='#'+m[1]+'-'+m[2]; rest=s.replace(m[0],' ');
+  }else if((m=s.match(/(B?\d+)\s*호/))){
+    unit='#'+m[1]; rest=s.replace(m[0],'');
+  }else if((m=s.match(/(\d+)\s*층/))){
+    unit=m[1]+'F'; rest=s.replace(m[0],'');
+  }
+  rest=rest.replace(/[,\s]+/g,' ').trim();
+  return {unit, rest};
+}
+
+/* ---------- 원문 파싱 ---------- */
+const PROVINCE=/(서울|부산|대구|인천|광주|대전|울산|세종|경기|강원|충청|충북|충남|전라|전북|전남|경상|경북|경남|제주)[가-힣]*\s/;
+const LABEL_STOP=/^(Address\s*\(ENG|Postal|Phone|Personal|Email|E-mail|개인통관|연락처|휴대|전화|우편|수취인|이름|Name|배송\s*메|요청)/i;
+
+function parseRaw(raw){
+  const r={nameKo:'',nameEnGiven:'',addrKo:'',phone:'',pccc:'',postalGiven:'',foreign:false};
+  const text=raw.replace(/\r/g,'');
+  const lines=text.split('\n').map(l=>l.trim()).filter(Boolean);
+
+  let m=text.match(/P\s*\d{12}/i); if(m) r.pccc=m[0].replace(/\s/g,'').toUpperCase();
+  const noPccc=text.replace(/P\s*\d{12}/ig,' ');
+  m=noPccc.match(/(?:^|[^\d])(?:\+?82[\s-]*)?(0?1[016789])[\s.\-]?(\d{3,4})[\s.\-]?(\d{4})(?!\d)/);
+  if(m){ let a=m[1]; if(!a.startsWith('0')) a='0'+a; r.phone=a+'-'+m[2]+'-'+m[3]; }
+
+  // 이름
+  m=text.match(/(?:수취인명|수취인|받는\s*(?:분|사람)|수령인|이름|성함|Name[^:：\t\n]*)[\s:：\t]+([가-힣]{2,5})/);
+  if(m) r.nameKo=m[1];
+  if(!r.nameKo){
+    m=text.match(/^([가-힣]{2,5})\s*[\(（]\s*([A-Za-z\s]+)\s*[\)）]/m);
+    if(m){ r.nameKo=m[1]; r.nameEnGiven=m[2].trim(); }
+  }
+  if(!r.nameKo){
+    for(const l of lines){ if(/^[가-힣]{2,5}$/.test(l) && !/(배송지|정보|주소|연락처)/.test(l)){ r.nameKo=l; break; } }
+  }
+  if(!r.nameEnGiven){
+    m=text.match(/[가-힣]{2,5}[ \t]*\/[ \t]*([A-Za-z][A-Za-z \-]+)/);
+    if(m) r.nameEnGiven=m[1].trim();
+    else { m=text.match(/[가-힣]{2,5}\s*[\(（]\s*([A-Za-z\s]+)\s*[\)）]/); if(m) r.nameEnGiven=m[1].trim(); }
   }
 
-  const api = new URL("https://business.juso.go.kr/addrlink/addrEngApi.do");
-  api.searchParams.set("confmKey", Deno.env.get("JUSO_ENG_KEY") ?? "");
-  api.searchParams.set("currentPage", "1");
-  api.searchParams.set("countPerPage", "10");
-  api.searchParams.set("keyword", keyword);
-  api.searchParams.set("resultType", "json");
+  // 주소
+  for(let k=0;k<lines.length;k++){
+    const l=lines[k];
+    if(/Address\s*\(ENG/i.test(l)) continue;
+    const pm=l.match(PROVINCE);
+    if(!pm) continue;
+    const before=l.slice(0,pm.index);
+    const pg=before.match(/(\d{5})\s*$/); if(pg) r.postalGiven=pg[1];
+    let addr=l.slice(pm.index).trim();
+    // 다음 줄이 상세주소면 붙이기
+    const nx=lines[k+1];
+    if(nx && !LABEL_STOP.test(nx) && !/P\d{12}/i.test(nx) && !/01[016789][\s\-]?\d{3,4}/.test(nx) && nx.length<=40 && /[가-힣0-9]/.test(nx) && !/^[A-Za-z#]/.test(nx)){
+      addr+=' '+nx;
+    }
+    r.addrKo=addr.replace(/\s+/g,' ').trim();
+    break;
+  }
+  if(!r.postalGiven){ m=text.match(/(?:Postal\s*Code|우편번호)[\s:：\t]*(\d{5})/i); if(m) r.postalGiven=m[1]; }
+  if(!r.addrKo && /(Germany|USA|Japan|Taiwan|China|Canada|France|United)/i.test(text)) r.foreign=true;
+  return r;
+}
 
-  const r = await fetch(api);
-  const body = await r.text();
-  return new Response(body, {
-    status: r.status,
-    headers: { ...cors, "Content-Type": "application/json; charset=utf-8" },
+// 한글 주소 → 검색어 / 건물 / 동호
+function splitKoAddress(addr){
+  const res={query:'',building:'',unitEn:'',restDetail:''};
+  if(!addr) return res;
+  let m=addr.match(/^(.+?(?:로|길)\s*\d+(?:-\d+)?)(?:\s*[\(（]([^)）]*)[\)）])?\s*,?\s*(.*)$/);
+  let paren='', tail='';
+  if(m){ res.query=m[1].trim(); paren=m[2]||''; tail=m[3]||''; }
+  else{
+    m=addr.match(/^(.+?(?:동|리|가)\s*(?:산\s*)?\d+(?:-\d+)?)\s*,?\s*(.*)$/);
+    if(m){ res.query=m[1].trim(); tail=m[2]||''; } else { res.query=addr; }
+  }
+  // 괄호 안: "중계동, 동진,신안아파트" → 첫 항목은 법정동, 나머지는 건물명
+  let parenBldg='';
+  if(paren){ const ps=paren.split(','); if(ps.length>1) parenBldg=ps.slice(1).join(',').trim(); }
+  const u=parseUnit(tail);
+  res.unitEn=u.unit;
+  res.building=(u.rest||parenBldg).trim();
+  return res;
+}
+</script>
+
+<script>
+const $=id=>document.getElementById(id);
+const F=['nameKo','nameEn','addrKo','addrQuery','unitEn','bldgEn','roadEn','postal','phone','pccc'];
+let lastParsed=null, daumLoaded=false;
+
+function build(){
+  const v=Object.fromEntries(F.map(k=>[k,$(k).value.trim()]));
+  const eng=[v.unitEn, v.bldgEn, v.roadEn, v.roadEn?'Republic of Korea':''].filter(Boolean).join(', ');
+  const out=
+`@수취인 정보 / Customer Info
+
+Name (한/영): ${v.nameKo}${v.nameEn?' / '+v.nameEn:''}
+Address (KOR): ${v.addrKo}
+Address (ENG): ${eng}
+Postal Code: ${v.postal}
+Phone: ${v.phone}
+Personal Customs Code: ${v.pccc}`;
+  $('out').textContent=out;
+  checks(v);
+}
+
+function checks(v){
+  const w=[];
+  if(lastParsed && lastParsed.foreign) w.push('해외 주소로 보입니다. 이 변환기는 국내 주소용이라 해외 고객은 직접 정리해 주세요.');
+  if(!v.nameKo) w.push('이름을 찾지 못했습니다.');
+  if(!v.addrKo) w.push('한글 주소를 찾지 못했습니다.');
+  if(!v.roadEn || !v.postal) w.push('우편번호·영문 도로명이 비어 있습니다. [자동 조회]나 [카카오 검색창]으로 채우세요.');
+  if(v.pccc && !/^P\d{12}$/.test(v.pccc)) w.push('통관부호 형식이 P+숫자12자리가 아닙니다.');
+  if(!v.pccc) w.push('통관부호가 없습니다.');
+  if(v.phone && !/^01[016789]-\d{3,4}-\d{4}$/.test(v.phone)) w.push('전화번호 형식을 확인하세요.');
+  if(lastParsed && lastParsed.postalGiven && v.postal && lastParsed.postalGiven!==v.postal) w.push(`고객 기재 우편번호(${lastParsed.postalGiven})와 조회 결과(${v.postal})가 다릅니다.`);
+  if(lastParsed && lastParsed.nameEnGiven) w.push(`고객이 쓴 영문 이름: ${lastParsed.nameEnGiven} — 필요하면 이름(영)에 반영하세요.`);
+  if(lastParsed && lastParsed.searchNote) w.push(lastParsed.searchNote);
+  $('warns').innerHTML=w.map(t=>`<div class="warn">${t.replace(/</g,'&lt;')}</div>`).join('');
+}
+
+function parse(){
+  const p=parseRaw($('raw').value);
+  lastParsed=p;
+  const s=splitKoAddress(p.addrKo);
+  $('nameKo').value=p.nameKo;
+  $('nameEn').value=romanizeName(p.nameKo);
+  $('addrKo').value=p.addrKo;
+  $('addrQuery').value=s.query;
+  $('unitEn').value=s.unitEn;
+  $('bldgEn').value=romanizeBuilding(s.building);
+  $('roadEn').value='';
+  $('postal').value='';
+  $('phone').value=p.phone;
+  $('pccc').value=p.pccc;
+  $('candidates').hidden=true;
+  build();
+  if(s.query && !p.foreign){
+    if(cfg().key || cfg().proxy) autoLookup();
+    else openSearch();
+  }
+}
+
+/* ---------- 행안부 영문주소 API ---------- */
+const LS_KEY='rc_cfg_v1';
+function cfg(){ try{ return JSON.parse(localStorage.getItem(LS_KEY))||{}; }catch(e){ return {}; } }
+function saveCfg(){
+  const c={key:$('apiKey').value.trim(), proxy:$('proxyUrl').value.trim()};
+  try{ localStorage.setItem(LS_KEY,JSON.stringify(c)); $('cfgState').textContent='저장됨'; }
+  catch(e){ $('cfgState').textContent='이 브라우저에서는 저장할 수 없습니다'; }
+  setTimeout(()=>$('cfgState').textContent='',2000);
+}
+function cleanKeyword(q){ return (q||'').replace(/[%=><;'"\\]/g,' ').replace(/\s+/g,' ').trim(); }
+
+// 직접 호출(JSON) → 실패 시 JSONP → 중계 주소 순서로 시도
+async function callJuso(keyword){
+  const c=cfg();
+  const qs='confmKey='+encodeURIComponent(c.key||'')+'&currentPage=1&countPerPage=10&keyword='+encodeURIComponent(keyword)+'&resultType=json';
+  const errs=[];
+  if(c.proxy){
+    try{
+      const r=await fetch(c.proxy+(c.proxy.includes('?')?'&':'?')+'keyword='+encodeURIComponent(keyword));
+      return await r.json();
+    }catch(e){ errs.push('중계'); }
+  }
+  if(c.key){
+    try{
+      const r=await fetch('https://business.juso.go.kr/addrlink/addrEngApi.do?'+qs);
+      return await r.json();
+    }catch(e){ errs.push('직접'); }
+    try{ return await jsonp('https://business.juso.go.kr/addrlink/addrEngApiJsonp.do?'+qs); }
+    catch(e){ errs.push('JSONP'); }
+  }
+  throw new Error(errs.join('/'));
+}
+function jsonp(url){
+  return new Promise((res,rej)=>{
+    const cb='__juso_'+Date.now();
+    const sc=document.createElement('script');
+    const t=setTimeout(()=>{cleanup();rej(new Error('timeout'));},6000);
+    function cleanup(){ clearTimeout(t); delete window[cb]; sc.remove(); }
+    window[cb]=d=>{ cleanup(); res(typeof d==='string'?JSON.parse(d):d); };
+    sc.onerror=()=>{ cleanup(); rej(new Error('jsonp')); };
+    sc.src=url+'&callback='+cb;
+    document.head.appendChild(sc);
   });
-});
+}
+const norm=s=>(s||'').replace(/[\s,()（）]/g,'');
+function pickBest(list, query){
+  const q=norm(query);
+  return list.find(j=>norm(j.korAddr).startsWith(q) || q.startsWith(norm(j.korAddr))) || null;
+}
+function applyJuso(j, note){
+  $('postal').value=j.zipNo||'';
+  $('roadEn').value=(j.roadAddr||'').replace(/,?\s*Republic of Korea\s*$/i,'').replace(/\s+/g,' ').trim();
+  if(lastParsed) lastParsed.searchNote=note||(`조회 주소: ${j.korAddr} — 고객 주소와 같은 곳인지 확인하세요.`);
+  $('candidates').hidden=true;
+  build();
+}
+async function autoLookup(){
+  const q=cleanKeyword($('addrQuery').value);
+  if(!q){ toast('검색용 주소가 비어 있습니다.'); return; }
+  $('lookupState').textContent='조회 중…';
+  try{
+    const d=await callJuso(q);
+    const com=d && d.results && d.results.common;
+    if(!com || com.errorCode!=='0'){
+      $('lookupState').textContent='';
+      toast('조회 실패: '+(com?com.errorMessage:'응답 형식 오류')+' — 카카오 검색창으로 전환합니다.');
+      return openSearch();
+    }
+    const list=d.results.juso||[];
+    $('lookupState').textContent=`결과 ${list.length}건`;
+    if(!list.length){
+      if(lastParsed) lastParsed.searchNote='주소 DB에서 찾지 못했습니다(신축 등). 우편번호·영문 도로명을 직접 확인하세요.';
+      build(); return;
+    }
+    const best=pickBest(list,q);
+    if(best){ applyJuso(best); toast('우편번호·영문 도로명을 적용했습니다.'); return; }
+    if(list.length===1){ applyJuso(list[0]); toast('우편번호·영문 도로명을 적용했습니다.'); return; }
+    // 여러 건: 선택지 표시
+    const box=$('candidates'); box.innerHTML='';
+    list.forEach(j=>{
+      const b=document.createElement('button');
+      b.innerHTML=`${j.korAddr.replace(/</g,'&lt;')} <small>[${j.zipNo}]</small><br><small>${j.roadAddr.replace(/</g,'&lt;')}</small>`;
+      b.onclick=()=>{ applyJuso(j); toast('적용했습니다.'); };
+      box.appendChild(b);
+    });
+    box.hidden=false;
+    toast('검색 결과가 여러 건입니다. 맞는 주소를 선택하세요.');
+  }catch(e){
+    $('lookupState').textContent='';
+    toast('API에 연결하지 못했습니다('+e.message+'). 카카오 검색창으로 전환합니다.');
+    openSearch();
+  }
+}
+async function testCfg(){
+  saveCfg();
+  $('cfgState').textContent='테스트 중…';
+  try{
+    const d=await callJuso('서울특별시 노원구 중계로 197');
+    const com=d.results.common;
+    $('cfgState').textContent= com.errorCode==='0' ? `연결 성공 (${(d.results.juso[0]||{}).zipNo||'-'})` : `실패: ${com.errorMessage}`;
+  }catch(e){ $('cfgState').textContent='연결 실패: 브라우저 직접 호출이 막혀 있습니다. 중계 주소가 필요합니다.'; }
+}
+
+function loadDaum(cb){
+  if(daumLoaded) return cb();
+  const sc=document.createElement('script');
+  sc.src='https://t1.daumcdn.net/mapjsapi/bundle/postcode/prod/postcode.v2.js';
+  sc.onload=()=>{daumLoaded=true;cb();};
+  sc.onerror=()=>toast('주소 검색 서비스를 불러오지 못했습니다. 인터넷 연결을 확인하세요.');
+  document.head.appendChild(sc);
+}
+
+function openSearch(){
+  loadDaum(()=>{
+    const wrap=$('postcodeWrap'); wrap.innerHTML='';
+    $('modal').style.display='flex';
+    new daum.Postcode({
+      width:'100%', height:'100%',
+      oncomplete:function(data){
+        $('postal').value=data.zonecode||'';
+        $('roadEn').value=(data.roadAddressEnglish||'').replace(/\s+/g,' ').trim();
+        if(!data.roadAddressEnglish) toast('도로명 영문주소가 없는 주소입니다. 직접 입력하세요.');
+        if(lastParsed) lastParsed.searchNote=`조회 주소: ${data.roadAddress||data.jibunAddress} — 고객 주소와 같은 곳인지 확인하세요.`;
+        $('modal').style.display='none';
+        build(); toast('우편번호·영문 도로명을 적용했습니다.');
+      }
+    }).embed(wrap,{q:$('addrQuery').value, autoClose:false});
+  });
+}
+
+async function copyOut(){
+  const t=$('out').textContent;
+  try{ await navigator.clipboard.writeText(t); }
+  catch(e){ const ta=document.createElement('textarea'); ta.value=t; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  $('copied').textContent='복사됨'; setTimeout(()=>$('copied').textContent='',1500);
+}
+
+function toast(msg){ const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'),1800); }
+
+$('btnParse').onclick=parse;
+$('btnClear').onclick=()=>{ $('raw').value=''; F.forEach(k=>$(k).value=''); lastParsed=null; build(); $('raw').focus(); };
+$('btnSearch').onclick=openSearch;
+$('btnLookup').onclick=autoLookup;
+$('btnSaveCfg').onclick=saveCfg;
+$('btnTestCfg').onclick=testCfg;
+(()=>{ const c=cfg(); $('apiKey').value=c.key||''; $('proxyUrl').value=c.proxy||''; if(!c.key && !c.proxy) $('settings').open=true; })();
+$('btnClose').onclick=()=>$('modal').style.display='none';
+$('modal').onclick=e=>{ if(e.target.id==='modal') $('modal').style.display='none'; };
+$('btnCopy').onclick=copyOut;
+$('raw').addEventListener('paste',()=>setTimeout(parse,0));
+F.forEach(k=>$(k).addEventListener('input',build));
+build();
+</script>
+</body>
+</html>
